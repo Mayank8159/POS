@@ -33,10 +33,10 @@ export default function App() {
       const count = await db.products.count();
       if (count === 0) {
         await db.products.bulkAdd([
-          { name: 'Espresso', price: 2.50, category: 'Drinks', stock: 100 },
-          { name: 'Latte', price: 3.50, category: 'Drinks', stock: 100 },
-          { name: 'Croissant', price: 2.00, category: 'Food', stock: 50 },
-          { name: 'Sandwich', price: 5.00, category: 'Food', stock: 30 }
+          { name: 'Espresso', price: 120, category: 'Drinks', stock: 100 },
+          { name: 'Latte', price: 150, category: 'Drinks', stock: 100 },
+          { name: 'Croissant', price: 80, category: 'Food', stock: 50 },
+          { name: 'Sandwich', price: 200, category: 'Food', stock: 30 }
         ]);
         loadProducts();
       }
@@ -161,7 +161,7 @@ export default function App() {
                       {p.name.charAt(0)}
                     </div>
                     <div className="product-title">{p.name}</div>
-                    <div className="product-price">${Number(p.price).toFixed(2)}</div>
+                    <div className="product-price">₹{Number(p.price).toLocaleString('en-IN')}</div>
                   </div>
                 ))}
                 {filteredProducts.length === 0 && (
@@ -184,7 +184,7 @@ export default function App() {
                   <div key={item.id} className="cart-item">
                     <div className="item-info">
                       <div className="item-name">{item.name}</div>
-                      <div className="item-price">${Number(item.price).toFixed(2)} / ea</div>
+                      <div className="item-price">₹{Number(item.price).toLocaleString('en-IN')} / ea</div>
                     </div>
                     <div className="item-controls">
                       <button className="qty-btn" onClick={() => updateQty(item.id, -1)}><Minus size={14}/></button>
@@ -192,7 +192,7 @@ export default function App() {
                       <button className="qty-btn" onClick={() => updateQty(item.id, 1)}><Plus size={14}/></button>
                     </div>
                     <div className="item-total">
-                      ${(item.price * item.qty).toFixed(2)}
+                      ₹{(item.price * item.qty).toLocaleString('en-IN')}
                     </div>
                   </div>
                 ))}
@@ -200,15 +200,15 @@ export default function App() {
               <div className="checkout-section">
                 <div className="totals-row">
                   <span>Subtotal</span>
-                  <span>${grandTotal.toFixed(2)}</span>
+                  <span>₹{grandTotal.toLocaleString('en-IN')}</span>
                 </div>
                 <div className="totals-row">
                   <span>Tax (0%)</span>
-                  <span>$0.00</span>
+                  <span>₹0</span>
                 </div>
                 <div className="totals-row grand-total">
                   <span>Total</span>
-                  <span>${grandTotal.toFixed(2)}</span>
+                  <span>₹{grandTotal.toLocaleString('en-IN')}</span>
                 </div>
                 <button className="checkout-btn" onClick={handleCheckout} disabled={cart.length === 0}>
                   <Printer size={20} />
@@ -243,7 +243,7 @@ export default function App() {
                     <td>#{p.id}</td>
                     <td style={{fontWeight: 500}}>{p.name}</td>
                     <td>{p.category}</td>
-                    <td>${Number(p.price).toFixed(2)}</td>
+                    <td>₹{Number(p.price).toLocaleString('en-IN')}</td>
                     <td>{p.stock}</td>
                     <td>
                       <button className="btn" style={{color: 'var(--danger)', padding: '0.2rem 0.5rem'}} onClick={() => handleDeleteProduct(p.id)}>
@@ -277,7 +277,7 @@ export default function App() {
                      <td>#{o.id}</td>
                      <td>{new Date(o.date).toLocaleString()}</td>
                      <td>{o.items.reduce((s, it) => s + it.qty, 0)} items</td>
-                     <td style={{fontWeight: 600, color: 'var(--success)'}}>${Number(o.total).toFixed(2)}</td>
+                     <td style={{fontWeight: 600, color: 'var(--success)'}}>₹{Number(o.total).toLocaleString('en-IN')}</td>
                      <td style={{textTransform: 'capitalize'}}>{o.status}</td>
                    </tr>
                 ))}
@@ -302,7 +302,7 @@ export default function App() {
                 </div>
                 <div className="form-group" style={{display: 'flex', gap: '1rem'}}>
                   <div style={{flex: 1}}>
-                    <label>Price ($)</label>
+                    <label>Price (₹)</label>
                     <input type="number" step="0.01" required value={newProduct.price} onChange={e => setNewProduct({...newProduct, price: e.target.value})}/>
                   </div>
                   <div style={{flex: 1}}>
@@ -341,7 +341,7 @@ export default function App() {
                   {receiptData.items.map((item, i) => (
                     <tr key={i}>
                       <td style={{padding: '2px 0'}}>{item.qty}x {item.name}</td>
-                      <td style={{textAlign: 'right'}}>${(item.price * item.qty).toFixed(2)}</td>
+                      <td style={{textAlign: 'right'}}>₹{(item.price * item.qty).toLocaleString('en-IN')}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -351,7 +351,7 @@ export default function App() {
               
               <div style={{display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', fontSize: '14px', margin: '5px 0'}}>
                 <span>TOTAL</span>
-                <span>${receiptData.total.toFixed(2)}</span>
+                <span>₹{receiptData.total.toLocaleString('en-IN')}</span>
               </div>
               
               <div style={{textAlign: 'center', marginTop: '15px', fontSize: '10px'}}>
