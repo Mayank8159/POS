@@ -145,7 +145,9 @@ log "POS server service created and started on port 3000."
 log "Step 9/9: Configuring Chromium kiosk mode autostart..."
 
 AUTOSTART_DIR="$HOME_DIR/.config/autostart"
+KIOSK_PROFILE_DIR="$HOME_DIR/.config/chromium-pos"
 mkdir -p "$AUTOSTART_DIR"
+mkdir -p "$KIOSK_PROFILE_DIR"
 
 # Disable screensaver and power management
 cat > "$AUTOSTART_DIR/screensaver-disable.desktop" << EOF
@@ -160,12 +162,12 @@ cat > "$AUTOSTART_DIR/pos-kiosk.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=POS Kiosk
-Exec=bash -c "sleep 5 && chromium-browser --kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble --disable-restore-session-state --no-first-run --check-for-update-interval=31536000 --kiosk-printing --enable-features=WebSerial http://localhost:3000"
+Exec=bash -c "sleep 5 && chromium-browser --user-data-dir=$KIOSK_PROFILE_DIR --kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble --disable-restore-session-state --no-first-run --check-for-update-interval=31536000 --kiosk-printing --enable-features=WebSerial http://localhost:3000"
 X-GNOME-Autostart-enabled=true
 EOF
 
 # Also disable right-click context menu and cursor in kiosk settings
-cat > "$HOME_DIR/.config/chromium/Local State" << 'EOF'
+cat > "$KIOSK_PROFILE_DIR/Local State" << 'EOF'
 {
    "browser": {
       "has_seen_welcome_page": true,
@@ -175,6 +177,7 @@ cat > "$HOME_DIR/.config/chromium/Local State" << 'EOF'
 EOF
 
 chown -R "$POS_USER":"$POS_USER" "$AUTOSTART_DIR"
+chown -R "$POS_USER":"$POS_USER" "$KIOSK_PROFILE_DIR"
 log "Chromium kiosk mode configured. App will launch at http://localhost:3000 on boot."
 
 # -------------------------------------------------------

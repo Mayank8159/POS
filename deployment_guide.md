@@ -127,7 +127,7 @@ After reboot, the Pi will:
 
 The POS database (all products and orders) is stored in Chromium's IndexedDB, which lives on the SD card at:
 ```
-~/.config/chromium/Default/IndexedDB/
+~/.config/chromium-pos/Default/IndexedDB/
 ```
 
 ### Backup Strategy
@@ -139,6 +139,7 @@ DATE=$(date +%Y-%m-%d)
 DEST="/media/pi/BACKUP_USB/pos-backups/$DATE"
 mkdir -p "$DEST"
 cp -r ~/.config/chromium/Default/IndexedDB/ "$DEST/IndexedDB/"
+cp -r ~/.config/chromium-pos/Default/IndexedDB/ "$DEST/IndexedDB/"
 echo "Backup complete: $DEST"
 ```
 

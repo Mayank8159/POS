@@ -1,4 +1,7 @@
 const DEFAULT_LINE_WIDTH = 32;
+const DEFAULT_BAUD_RATE = 9600;
+
+export const SERIAL_BAUD_RATE = DEFAULT_BAUD_RATE;
 
 function encoder() {
   return new TextEncoder();
@@ -144,16 +147,18 @@ export function isWebSerialSupported() {
   return typeof navigator !== 'undefined' && 'serial' in navigator;
 }
 
-export async function connectSerialPrinter() {
+export async function connectSerialPrinter(options = {}) {
   if (!isWebSerialSupported()) {
     throw new Error('Web Serial is not supported in this browser.');
   }
+
+  const baudRate = Number(options.baudRate || DEFAULT_BAUD_RATE);
 
   const existingPorts = await navigator.serial.getPorts();
   const port = existingPorts[0] || await navigator.serial.requestPort();
 
   if (!port.readable || !port.writable) {
-    await port.open({ baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
+    await port.open({ baudRate, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
   }
 
   return port;
@@ -164,8 +169,10 @@ export async function printReceiptSerial(port, receiptData, options = {}) {
     throw new Error('Printer port is not connected.');
   }
 
+  const baudRate = Number(options.baudRate || DEFAULT_BAUD_RATE);
+
   if (!port.writable) {
-    await port.open({ baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
+    await port.open({ baudRate, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
   }
 
   const writer = port.writable.getWriter();

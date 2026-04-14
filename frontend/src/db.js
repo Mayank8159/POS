@@ -30,6 +30,24 @@ export async function requestPersistentStorage() {
   }
 }
 
+export async function getStoragePersistenceStatus() {
+  const status = {
+    supported: false,
+    persisted: false,
+  };
+
+  if (!navigator.storage) {
+    return status;
+  }
+
+  if (navigator.storage.persisted) {
+    status.supported = true;
+    status.persisted = await navigator.storage.persisted();
+  }
+
+  return status;
+}
+
 // Check current storage usage
 export async function getStorageEstimate() {
   if (navigator.storage && navigator.storage.estimate) {

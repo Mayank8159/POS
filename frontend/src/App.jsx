@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { db, requestPersistentStorage, getStorageEstimate } from './db';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { db, requestPersistentStorage, getStorageEstimate, getStoragePersistenceStatus } from './db';
 import { LayoutGrid, Package, History, Search, Plus, Minus, Printer, Trash2, BarChart3, Settings } from 'lucide-react';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend } from 'chart.js';
 import { Bar, Doughnut } from 'react-chartjs-2';
-import { buildTestReceipt, connectSerialPrinter, isWebSerialSupported, printReceiptSerial } from './printer';
+import { buildTestReceipt, connectSerialPrinter, isWebSerialSupported, printReceiptSerial, SERIAL_BAUD_RATE } from './printer';
 import './index.css';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend);
@@ -13,6 +13,22 @@ const DEFAULT_SETTINGS = {
   shopName: 'PI POS SHOP',
   shopTagline: 'Raspberry Pi Based Point of Sale',
   lineWidth: 32,
+  kioskDensity: 'comfortable',
+};
+const DEFAULT_PRINTER_DIAGNOSTICS = {
+  baudRate: SERIAL_BAUD_RATE,
+  openState: 'Closed',
+  lastPrintResult: 'No print yet',
+  lastPrintOrder: '-',
+  lastPrintAt: '-',
+  lastErrorCode: '-',
+  lastErrorMessage: '-',
+};
+
+const createPrinterError = (code, message) => {
+  const err = new Error(message);
+  err.code = code;
+  return err;
 };
 
 export default function App() {
@@ -26,11 +42,50 @@ export default function App() {
   const [editingProduct, setEditingProduct] = useState(null);
   const [newProduct, setNewProduct] = useState({ name: '', price: '', category: '', stock: '', gst: 0 });
   const [receiptData, setReceiptData] = useState(null);
-  const [printerPort, setPrinterPort] = useState(null);
   const [printerStatus, setPrinterStatus] = useState('Disconnected');
   const [settingsForm, setSettingsForm] = useState(DEFAULT_SETTINGS);
   const [storageInfo, setStorageInfo] = useState(null);
+  const [storagePersistence, setStoragePersistence] = useState({ supported: false, persisted: false });
+  const [persistenceWarning, setPersistenceWarning] = useState('');
   const [message, setMessage] = useState('');
+  const [printerDiagnostics, setPrinterDiagnostics] = useState(DEFAULT_PRINTER_DIAGNOSTICS);
+  const [isPi800x480Landscape, setIsPi800x480Landscape] = useState(false);
+  const printerPortRef = useRef(null);
+
+  const updateDiagnostics = useCallback((patch) => {
+    setPrinterDiagnostics(prev => ({ ...prev, ...patch }));
+  }, []);
+
+  const markPrinterOpenState = useCallback((port) => {
+    const isOpen = Boolean(port && port.readable && port.writable);
+    updateDiagnostics({ openState: isOpen ? 'Open' : 'Closed' });
+  }, [updateDiagnostics]);
+
+  const setPrinterErrorDiagnostics = useCallback((errorCode, errorMessage) => {
+    updateDiagnostics({
+      lastErrorCode: errorCode || 'UNKNOWN_ERROR',
+      lastErrorMessage: errorMessage || 'Unknown printer error',
+    });
+  }, [updateDiagnostics]);
+
+  const clearPrinterErrorDiagnostics = useCallback(() => {
+    updateDiagnostics({ lastErrorCode: '-', lastErrorMessage: '-' });
+  }, [updateDiagnostics]);
+
+  const attachPrinterPort = useCallback((port) => {
+    printerPortRef.current = port;
+    markPrinterOpenState(port);
+  }, [markPrinterOpenState]);
+
+  const getPersistenceWarning = useCallback((persistence) => {
+    if (!persistence.supported) {
+      return 'Startup self-check: browser persistence API is unavailable. Data may be at risk on profile cleanup.';
+    }
+    if (!persistence.persisted) {
+      return 'Startup self-check: persistent storage is NOT granted. Data may be evicted under storage pressure.';
+    }
+    return '';
+  }, []);
 
   // Load Data
   const loadProducts = async () => {
@@ -42,24 +97,26 @@ export default function App() {
     setOrders(all);
   };
   const loadSettings = async () => {
-    const [shopName, shopTagline, lineWidth] = await Promise.all([
+    const [shopName, shopTagline, lineWidth, kioskDensity] = await Promise.all([
       db.settings.get('shopName'),
       db.settings.get('shopTagline'),
-      db.settings.get('lineWidth')
+      db.settings.get('lineWidth'),
+      db.settings.get('kioskDensity')
     ]);
 
     setSettingsForm({
       shopName: shopName?.value || DEFAULT_SETTINGS.shopName,
       shopTagline: shopTagline?.value || DEFAULT_SETTINGS.shopTagline,
       lineWidth: Number(lineWidth?.value || DEFAULT_SETTINGS.lineWidth),
+      kioskDensity: kioskDensity?.value || DEFAULT_SETTINGS.kioskDensity,
     });
   };
 
   useEffect(() => {
-    // Request persistent storage so data survives app/device restarts
-    requestPersistentStorage();
-
     const bootstrap = async () => {
+      // Request persistent storage so IndexedDB survives app/browser restarts.
+      await requestPersistentStorage();
+
       // Only seed sample data ONCE (tracked via settings table)
       const alreadySeeded = await db.settings.get('seeded');
       if (!alreadySeeded) {
@@ -90,8 +147,13 @@ export default function App() {
       setOrders(allOrders);
       await loadSettings();
 
-      const estimate = await getStorageEstimate();
+      const [estimate, persistence] = await Promise.all([
+        getStorageEstimate(),
+        getStoragePersistenceStatus(),
+      ]);
       setStorageInfo(estimate);
+      setStoragePersistence(persistence);
+      setPersistenceWarning(getPersistenceWarning(persistence));
     };
     bootstrap();
 
@@ -102,16 +164,75 @@ export default function App() {
         if (ports.length > 0) {
           const port = ports[0];
           if (!port.readable || !port.writable) {
-            await port.open({ baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
+            await port.open({ baudRate: SERIAL_BAUD_RATE, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
           }
-          setPrinterPort(port);
+          attachPrinterPort(port);
           setPrinterStatus('Connected');
+          clearPrinterErrorDiagnostics();
         }
-      } catch {
+      } catch (error) {
         setPrinterStatus('Disconnected');
+        setPrinterErrorDiagnostics('AUTO_RESTORE_FAILED', error.message);
+        markPrinterOpenState(null);
       }
     };
     restoreKnownPrinter();
+  }, [attachPrinterPort, clearPrinterErrorDiagnostics, getPersistenceWarning, markPrinterOpenState, setPrinterErrorDiagnostics]);
+
+  useEffect(() => {
+    if (!isWebSerialSupported()) return;
+
+    const onSerialConnect = async (event) => {
+      try {
+        const port = event?.target || event?.port;
+        if (!port) return;
+        if (!port.readable || !port.writable) {
+          await port.open({ baudRate: SERIAL_BAUD_RATE, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
+        }
+        attachPrinterPort(port);
+        setPrinterStatus('Connected');
+        clearPrinterErrorDiagnostics();
+        setMessage('Printer reconnected automatically.');
+      } catch (error) {
+        setPrinterStatus('Disconnected');
+        setPrinterErrorDiagnostics('AUTO_RECONNECT_FAILED', error.message);
+        setMessage(`Auto-reconnect failed: ${error.message}`);
+      }
+    };
+
+    const onSerialDisconnect = (event) => {
+      const disconnectedPort = event?.target || event?.port;
+      const activePort = printerPortRef.current;
+      if (activePort && disconnectedPort && activePort !== disconnectedPort) return;
+
+      attachPrinterPort(null);
+      setPrinterStatus('Disconnected');
+      setPrinterErrorDiagnostics('USB_DISCONNECTED', 'USB printer disconnected. Waiting for reconnect event.');
+      setMessage('Printer disconnected. Reconnect USB cable to auto-reconnect.');
+    };
+
+    navigator.serial.addEventListener('connect', onSerialConnect);
+    navigator.serial.addEventListener('disconnect', onSerialDisconnect);
+
+    return () => {
+      navigator.serial.removeEventListener('connect', onSerialConnect);
+      navigator.serial.removeEventListener('disconnect', onSerialDisconnect);
+    };
+  }, [attachPrinterPort, clearPrinterErrorDiagnostics, setPrinterErrorDiagnostics]);
+
+  useEffect(() => {
+    const updatePiScreenState = () => {
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      const isLandscape = w > h;
+      const widthMatch = w >= 760 && w <= 840;
+      const heightMatch = h >= 440 && h <= 520;
+      setIsPi800x480Landscape(isLandscape && widthMatch && heightMatch);
+    };
+
+    updatePiScreenState();
+    window.addEventListener('resize', updatePiScreenState);
+    return () => window.removeEventListener('resize', updatePiScreenState);
   }, []);
 
   // Categories derived from products
@@ -172,21 +293,40 @@ export default function App() {
 
   const printOrderViaSerial = async (order) => {
     if (!isWebSerialSupported()) {
-      throw new Error('Web Serial is not available. Use Chromium on Raspberry Pi and open this app on localhost.');
+      throw createPrinterError('BROWSER_UNSUPPORTED', 'Web Serial is not available. Use Chromium on Raspberry Pi and open this app on localhost.');
     }
 
-    let port = printerPort;
-    if (!port) {
-      port = await connectSerialPrinter();
-      setPrinterPort(port);
-    }
+    try {
+      let port = printerPortRef.current;
+      if (!port) {
+        port = await connectSerialPrinter({ baudRate: SERIAL_BAUD_RATE });
+        attachPrinterPort(port);
+      }
 
-    await printReceiptSerial(port, order, {
-      shopName: settingsForm.shopName,
-      tagline: settingsForm.shopTagline,
-      lineWidth: settingsForm.lineWidth,
-    });
-    setPrinterStatus('Connected');
+      await printReceiptSerial(port, order, {
+        shopName: settingsForm.shopName,
+        tagline: settingsForm.shopTagline,
+        lineWidth: settingsForm.lineWidth,
+        baudRate: SERIAL_BAUD_RATE,
+      });
+      setPrinterStatus('Connected');
+      clearPrinterErrorDiagnostics();
+      updateDiagnostics({
+        lastPrintResult: 'Success',
+        lastPrintOrder: String(order?.id || '-'),
+        lastPrintAt: new Date().toLocaleString('en-IN'),
+      });
+      markPrinterOpenState(port);
+    } catch (error) {
+      const code = error.code || 'PRINT_WRITE_FAILED';
+      setPrinterErrorDiagnostics(code, error.message);
+      updateDiagnostics({
+        lastPrintResult: 'Failed',
+        lastPrintOrder: String(order?.id || '-'),
+        lastPrintAt: new Date().toLocaleString('en-IN'),
+      });
+      throw createPrinterError(code, error.message);
+    }
   };
 
   const connectPrinter = async () => {
@@ -197,12 +337,16 @@ export default function App() {
     }
 
     try {
-      const port = await connectSerialPrinter();
-      setPrinterPort(port);
+      const port = await connectSerialPrinter({ baudRate: SERIAL_BAUD_RATE });
+      attachPrinterPort(port);
       setPrinterStatus('Connected');
+      clearPrinterErrorDiagnostics();
       setMessage('Printer connected successfully.');
     } catch (error) {
+      const code = error.code || 'PRINTER_CONNECT_FAILED';
       setPrinterStatus('Disconnected');
+      setPrinterErrorDiagnostics(code, error.message);
+      markPrinterOpenState(null);
       setMessage(`Printer connection failed: ${error.message}`);
     }
   };
@@ -213,8 +357,16 @@ export default function App() {
       db.settings.put({ key: 'shopName', value: settingsForm.shopName.trim() || DEFAULT_SETTINGS.shopName }),
       db.settings.put({ key: 'shopTagline', value: settingsForm.shopTagline.trim() || DEFAULT_SETTINGS.shopTagline }),
       db.settings.put({ key: 'lineWidth', value: Number(settingsForm.lineWidth) || 32 }),
+      db.settings.put({ key: 'kioskDensity', value: settingsForm.kioskDensity || DEFAULT_SETTINGS.kioskDensity }),
     ]);
     setMessage('Settings saved.');
+  };
+
+  const toggleKioskDensity = async () => {
+    const nextDensity = settingsForm.kioskDensity === 'compact' ? 'comfortable' : 'compact';
+    setSettingsForm(prev => ({ ...prev, kioskDensity: nextDensity }));
+    await db.settings.put({ key: 'kioskDensity', value: nextDensity });
+    setMessage(`Kiosk density set to ${nextDensity}.`);
   };
 
   const handleTestPrint = async () => {
@@ -223,6 +375,15 @@ export default function App() {
       setMessage('Test print sent.');
     } catch (error) {
       setMessage(`Test print failed: ${error.message}`);
+    }
+  };
+
+  const handleReprint = async (order) => {
+    try {
+      await printOrderViaSerial(order);
+      setMessage(`Reprint sent for order #${order.id}.`);
+    } catch (error) {
+      setMessage(`Reprint failed for order #${order.id}: ${error.message}`);
     }
   };
 
@@ -403,7 +564,7 @@ export default function App() {
   };
 
   return (
-    <div className="app-container">
+    <div className={`app-container ${settingsForm.kioskDensity === 'compact' ? 'density-compact' : 'density-comfortable'} ${isPi800x480Landscape ? 'pi-800x480' : ''}`}>
       {/* Sidebar Navigation */}
       <nav className="sidebar">
         <div className="sidebar-logo">Pi</div>
@@ -447,10 +608,16 @@ export default function App() {
               }
             </h2>
           )}
-          <div style={{ fontWeight: '600', color: 'var(--text-muted)' }}>
+          <div className="header-date" style={{ fontWeight: '600', color: 'var(--text-muted)' }}>
             {new Date().toLocaleDateString('en-IN', { weekday: 'long', month: 'short', day: 'numeric' })}
           </div>
         </header>
+
+        {persistenceWarning && (
+          <div className="warning-banner">
+            {persistenceWarning}
+          </div>
+        )}
 
         {message && (
           <div className="message-banner">
@@ -561,39 +728,41 @@ export default function App() {
               <h1 className="page-title" style={{ marginBottom: 0 }}>Inventory</h1>
               <button className="btn btn-primary" onClick={openAddModal}>+ Add Product</button>
             </div>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Name</th>
-                  <th>Category</th>
-                  <th>Price</th>
-                  <th>GST</th>
-                  <th>Stock</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {products.map(p => (
-                  <tr key={p.id}>
-                    <td>#{p.id}</td>
-                    <td style={{ fontWeight: 500 }}>{p.name}</td>
-                    <td>{p.category}</td>
-                    <td>₹{Number(p.price).toLocaleString('en-IN')}</td>
-                    <td><span className="gst-badge">{p.gst || 0}%</span></td>
-                    <td>{p.stock}</td>
-                    <td>
-                      <button className="btn" style={{ padding: '0.2rem 0.5rem', marginRight: '0.5rem' }} onClick={() => openEditModal(p)}>
-                        Edit
-                      </button>
-                      <button className="btn" style={{ color: 'var(--danger)', padding: '0.2rem 0.5rem' }} onClick={() => handleDeleteProduct(p.id)}>
-                        <Trash2 size={16} />
-                      </button>
-                    </td>
+            <div className="table-scroll">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Category</th>
+                    <th>Price</th>
+                    <th>GST</th>
+                    <th>Stock</th>
+                    <th>Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {products.map(p => (
+                    <tr key={p.id}>
+                      <td>#{p.id}</td>
+                      <td style={{ fontWeight: 500 }}>{p.name}</td>
+                      <td>{p.category}</td>
+                      <td>₹{Number(p.price).toLocaleString('en-IN')}</td>
+                      <td><span className="gst-badge">{p.gst || 0}%</span></td>
+                      <td>{p.stock}</td>
+                      <td>
+                        <button className="btn" style={{ padding: '0.2rem 0.5rem', marginRight: '0.5rem' }} onClick={() => openEditModal(p)}>
+                          Edit
+                        </button>
+                        <button className="btn" style={{ color: 'var(--danger)', padding: '0.2rem 0.5rem' }} onClick={() => handleDeleteProduct(p.id)}>
+                          <Trash2 size={16} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 
@@ -601,35 +770,43 @@ export default function App() {
         {view === 'history' && (
           <div className="view-section">
             <h1 className="page-title">Sales History</h1>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Order ID</th>
-                  <th>Date & Time</th>
-                  <th>Items</th>
-                  <th>Subtotal</th>
-                  <th>GST</th>
-                  <th>Total</th>
-                  <th>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {orders.map(o => (
-                  <tr key={o.id}>
-                    <td>#{o.id}</td>
-                    <td>{new Date(o.date).toLocaleString('en-IN')}</td>
-                    <td>{o.items ? o.items.reduce((s, it) => s + it.qty, 0) : 0} items</td>
-                    <td>₹{Number(o.subTotal || 0).toLocaleString('en-IN')}</td>
-                    <td style={{ color: 'var(--primary)' }}>₹{Number(o.gstAmount || 0).toLocaleString('en-IN')}</td>
-                    <td style={{ fontWeight: 600, color: 'var(--success)' }}>₹{Number(o.total).toLocaleString('en-IN')}</td>
-                    <td style={{ textTransform: 'capitalize' }}>{o.status}</td>
+            <div className="table-scroll">
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Order ID</th>
+                    <th>Date & Time</th>
+                    <th>Items</th>
+                    <th>Subtotal</th>
+                    <th>GST</th>
+                    <th>Total</th>
+                    <th>Status</th>
+                    <th>Actions</th>
                   </tr>
-                ))}
-                {orders.length === 0 && (
-                  <tr><td colSpan="7" style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>No past orders found.</td></tr>
-                )}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {orders.map(o => (
+                    <tr key={o.id}>
+                      <td>#{o.id}</td>
+                      <td>{new Date(o.date).toLocaleString('en-IN')}</td>
+                      <td>{o.items ? o.items.reduce((s, it) => s + it.qty, 0) : 0} items</td>
+                      <td>₹{Number(o.subTotal || 0).toLocaleString('en-IN')}</td>
+                      <td style={{ color: 'var(--primary)' }}>₹{Number(o.gstAmount || 0).toLocaleString('en-IN')}</td>
+                      <td style={{ fontWeight: 600, color: 'var(--success)' }}>₹{Number(o.total).toLocaleString('en-IN')}</td>
+                      <td style={{ textTransform: 'capitalize' }}>{o.status}</td>
+                      <td>
+                        <button className="btn" style={{ padding: '0.3rem 0.7rem' }} onClick={() => handleReprint(o)}>
+                          Reprint
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                  {orders.length === 0 && (
+                    <tr><td colSpan="8" style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>No past orders found.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         )}
 
@@ -700,6 +877,18 @@ export default function App() {
               </section>
 
               <section className="settings-card">
+                <h3>Printer Diagnostics</h3>
+                <p>Live serial state for Raspberry Pi 4 field troubleshooting.</p>
+                <div className="settings-row"><span>Baud Rate</span><strong>{printerDiagnostics.baudRate}</strong></div>
+                <div className="settings-row"><span>Port Open State</span><strong>{printerDiagnostics.openState}</strong></div>
+                <div className="settings-row"><span>Last Print Result</span><strong>{printerDiagnostics.lastPrintResult}</strong></div>
+                <div className="settings-row"><span>Last Printed Order</span><strong>{printerDiagnostics.lastPrintOrder}</strong></div>
+                <div className="settings-row"><span>Last Print Time</span><strong>{printerDiagnostics.lastPrintAt}</strong></div>
+                <div className="settings-row"><span>Last Error Code</span><strong className="diagnostic-code">{printerDiagnostics.lastErrorCode}</strong></div>
+                <div className="settings-row"><span>Last Error Message</span><strong className="diagnostic-error">{printerDiagnostics.lastErrorMessage}</strong></div>
+              </section>
+
+              <section className="settings-card">
                 <h3>Receipt Layout</h3>
                 <form onSubmit={handleSaveSettings}>
                   <div className="form-group">
@@ -728,13 +917,34 @@ export default function App() {
                       <option value={42}>80mm (42 chars)</option>
                     </select>
                   </div>
-                  <button type="submit" className="btn btn-primary">Save Settings</button>
+                  <div className="form-group">
+                    <label>Kiosk Density</label>
+                    <select
+                      value={settingsForm.kioskDensity}
+                      onChange={e => setSettingsForm({ ...settingsForm, kioskDensity: e.target.value })}
+                    >
+                      <option value="comfortable">Comfortable</option>
+                      <option value="compact">Compact</option>
+                    </select>
+                  </div>
+                  <div className="settings-row">
+                    <span>800x480 Landscape Profile</span>
+                    <strong>{isPi800x480Landscape ? 'Active' : 'Inactive'}</strong>
+                  </div>
+                  <div className="settings-actions">
+                    <button type="button" className="btn" onClick={toggleKioskDensity}>Toggle Density Mode</button>
+                    <button type="submit" className="btn btn-primary">Save Settings</button>
+                  </div>
                 </form>
               </section>
 
               <section className="settings-card">
                 <h3>Storage Health</h3>
                 <p>Data is stored in IndexedDB on the Raspberry Pi SD card.</p>
+                <div className="settings-row">
+                  <span>Persistent Storage</span>
+                  <strong>{storagePersistence.supported ? (storagePersistence.persisted ? 'Granted' : 'Not Granted') : 'Unsupported'}</strong>
+                </div>
                 <div className="settings-row">
                   <span>Usage</span>
                   <strong>{storageInfo ? `${Math.round(storageInfo.usage / 1024)} KB` : '-'}</strong>
