@@ -160,7 +160,7 @@ cat > "$AUTOSTART_DIR/pos-kiosk.desktop" << EOF
 [Desktop Entry]
 Type=Application
 Name=POS Kiosk
-Exec=bash -c "sleep 5 && chromium-browser --kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble --disable-restore-session-state --no-first-run --check-for-update-interval=31536000 --kiosk-printing http://localhost:3000"
+Exec=bash -c "sleep 5 && chromium-browser --kiosk --noerrdialogs --disable-infobars --disable-session-crashed-bubble --disable-restore-session-state --no-first-run --check-for-update-interval=31536000 --kiosk-printing --enable-features=WebSerial http://localhost:3000"
 X-GNOME-Autostart-enabled=true
 EOF
 
@@ -189,7 +189,11 @@ cat > /etc/chromium/policies/managed/pos-policy.json << 'EOF'
   "PrintingEnabled": true,
   "DefaultPrinterSelection": "",
   "PrintPreviewUseSystemDefaultPrinter": true,
-  "DisablePrintPreview": true
+  "DisablePrintPreview": true,
+  "DefaultSerialGuardSetting": 1,
+  "SerialAllowAllPortsForUrls": [
+    "http://localhost:3000"
+  ]
 }
 EOF
 

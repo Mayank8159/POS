@@ -1,13 +1,19 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { db, requestPersistentStorage } from './db';
+import { db, requestPersistentStorage, getStorageEstimate } from './db';
 import { LayoutGrid, Package, History, Search, Plus, Minus, Printer, Trash2, BarChart3, Settings } from 'lucide-react';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend } from 'chart.js';
 import { Bar, Doughnut } from 'react-chartjs-2';
+import { buildTestReceipt, connectSerialPrinter, isWebSerialSupported, printReceiptSerial } from './printer';
 import './index.css';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, ArcElement, Title, Tooltip, Legend);
 
 const GST_OPTIONS = [0, 5, 12, 18, 28];
+const DEFAULT_SETTINGS = {
+  shopName: 'PI POS SHOP',
+  shopTagline: 'Raspberry Pi Based Point of Sale',
+  lineWidth: 32,
+};
 
 export default function App() {
   const [view, setView] = useState('pos');
@@ -20,6 +26,11 @@ export default function App() {
   const [editingProduct, setEditingProduct] = useState(null);
   const [newProduct, setNewProduct] = useState({ name: '', price: '', category: '', stock: '', gst: 0 });
   const [receiptData, setReceiptData] = useState(null);
+  const [printerPort, setPrinterPort] = useState(null);
+  const [printerStatus, setPrinterStatus] = useState('Disconnected');
+  const [settingsForm, setSettingsForm] = useState(DEFAULT_SETTINGS);
+  const [storageInfo, setStorageInfo] = useState(null);
+  const [message, setMessage] = useState('');
 
   // Load Data
   const loadProducts = async () => {
@@ -30,16 +41,26 @@ export default function App() {
     const all = await db.orders.orderBy('id').reverse().toArray();
     setOrders(all);
   };
+  const loadSettings = async () => {
+    const [shopName, shopTagline, lineWidth] = await Promise.all([
+      db.settings.get('shopName'),
+      db.settings.get('shopTagline'),
+      db.settings.get('lineWidth')
+    ]);
+
+    setSettingsForm({
+      shopName: shopName?.value || DEFAULT_SETTINGS.shopName,
+      shopTagline: shopTagline?.value || DEFAULT_SETTINGS.shopTagline,
+      lineWidth: Number(lineWidth?.value || DEFAULT_SETTINGS.lineWidth),
+    });
+  };
 
   useEffect(() => {
     // Request persistent storage so data survives app/device restarts
     requestPersistentStorage();
 
-    loadProducts();
-    loadOrders();
-
-    // Only seed sample data ONCE (tracked via settings table)
-    const initData = async () => {
+    const bootstrap = async () => {
+      // Only seed sample data ONCE (tracked via settings table)
       const alreadySeeded = await db.settings.get('seeded');
       if (!alreadySeeded) {
         const count = await db.products.count();
@@ -56,13 +77,41 @@ export default function App() {
             { name: 'Brownie', price: 120, category: 'Desserts', stock: 60, gst: 5 },
             { name: 'Cheesecake', price: 220, category: 'Desserts', stock: 30, gst: 18 },
           ]);
-          loadProducts();
         }
         // Mark as seeded so sample data never re-appears
         await db.settings.put({ key: 'seeded', value: true });
       }
+
+      const [allProducts, allOrders] = await Promise.all([
+        db.products.toArray(),
+        db.orders.orderBy('id').reverse().toArray(),
+      ]);
+      setProducts(allProducts);
+      setOrders(allOrders);
+      await loadSettings();
+
+      const estimate = await getStorageEstimate();
+      setStorageInfo(estimate);
     };
-    initData();
+    bootstrap();
+
+    const restoreKnownPrinter = async () => {
+      if (!isWebSerialSupported()) return;
+      try {
+        const ports = await navigator.serial.getPorts();
+        if (ports.length > 0) {
+          const port = ports[0];
+          if (!port.readable || !port.writable) {
+            await port.open({ baudRate: 9600, dataBits: 8, stopBits: 1, parity: 'none', flowControl: 'none' });
+          }
+          setPrinterPort(port);
+          setPrinterStatus('Connected');
+        }
+      } catch {
+        setPrinterStatus('Disconnected');
+      }
+    };
+    restoreKnownPrinter();
   }, []);
 
   // Categories derived from products
@@ -121,6 +170,62 @@ export default function App() {
   const totalGst = Object.values(gstBreakdown).reduce((s, v) => s + v, 0);
   const grandTotal = subTotal + totalGst;
 
+  const printOrderViaSerial = async (order) => {
+    if (!isWebSerialSupported()) {
+      throw new Error('Web Serial is not available. Use Chromium on Raspberry Pi and open this app on localhost.');
+    }
+
+    let port = printerPort;
+    if (!port) {
+      port = await connectSerialPrinter();
+      setPrinterPort(port);
+    }
+
+    await printReceiptSerial(port, order, {
+      shopName: settingsForm.shopName,
+      tagline: settingsForm.shopTagline,
+      lineWidth: settingsForm.lineWidth,
+    });
+    setPrinterStatus('Connected');
+  };
+
+  const connectPrinter = async () => {
+    if (!isWebSerialSupported()) {
+      setPrinterStatus('Not supported');
+      setMessage('Web Serial is not supported in this browser. Use Chromium kiosk on Raspberry Pi.');
+      return;
+    }
+
+    try {
+      const port = await connectSerialPrinter();
+      setPrinterPort(port);
+      setPrinterStatus('Connected');
+      setMessage('Printer connected successfully.');
+    } catch (error) {
+      setPrinterStatus('Disconnected');
+      setMessage(`Printer connection failed: ${error.message}`);
+    }
+  };
+
+  const handleSaveSettings = async (e) => {
+    e.preventDefault();
+    await Promise.all([
+      db.settings.put({ key: 'shopName', value: settingsForm.shopName.trim() || DEFAULT_SETTINGS.shopName }),
+      db.settings.put({ key: 'shopTagline', value: settingsForm.shopTagline.trim() || DEFAULT_SETTINGS.shopTagline }),
+      db.settings.put({ key: 'lineWidth', value: Number(settingsForm.lineWidth) || 32 }),
+    ]);
+    setMessage('Settings saved.');
+  };
+
+  const handleTestPrint = async () => {
+    try {
+      await printOrderViaSerial(buildTestReceipt());
+      setMessage('Test print sent.');
+    } catch (error) {
+      setMessage(`Test print failed: ${error.message}`);
+    }
+  };
+
   const handleCheckout = async () => {
     if (cart.length === 0) return;
 
@@ -134,15 +239,31 @@ export default function App() {
       status: 'completed'
     };
 
-    const id = await db.orders.add(newOrder);
-    setReceiptData({ id, ...newOrder });
+    let completedOrder = null;
+    await db.transaction('rw', db.orders, db.products, async () => {
+      for (const item of cart) {
+        const fresh = await db.products.get(item.id);
+        const nextStock = Math.max(0, Number(fresh?.stock || 0) - item.qty);
+        await db.products.update(item.id, { stock: nextStock });
+      }
 
-    setTimeout(() => {
-      window.print();
+      const id = await db.orders.add(newOrder);
+      completedOrder = { id, ...newOrder };
+    });
+
+    setReceiptData(completedOrder);
+
+    try {
+      await printOrderViaSerial(completedOrder);
       setCart([]);
-      setReceiptData(null);
-      loadOrders();
-    }, 500);
+      setMessage(`Order #${completedOrder.id} printed successfully.`);
+    } catch (error) {
+      setMessage(`Order #${completedOrder.id} saved, but printing failed: ${error.message}`);
+    }
+
+    setReceiptData(null);
+    loadOrders();
+    loadProducts();
   };
 
   const openAddModal = () => {
@@ -298,6 +419,9 @@ export default function App() {
         <div className={`nav-item ${view === 'dashboard' ? 'active' : ''}`} onClick={() => setView('dashboard')} title="Dashboard">
           <BarChart3 size={24} />
         </div>
+        <div className={`nav-item ${view === 'settings' ? 'active' : ''}`} onClick={() => setView('settings')} title="Settings">
+          <Settings size={24} />
+        </div>
       </nav>
 
       {/* Main Content Area */}
@@ -315,13 +439,24 @@ export default function App() {
             </div>
           ) : (
             <h2 style={{ fontSize: '1.2rem' }}>
-              {view === 'products' ? 'Product Management' : view === 'history' ? 'Sales History' : 'Dashboard'}
+              {
+                view === 'products' ? 'Product Management'
+                  : view === 'history' ? 'Sales History'
+                    : view === 'dashboard' ? 'Dashboard'
+                      : 'Settings'
+              }
             </h2>
           )}
           <div style={{ fontWeight: '600', color: 'var(--text-muted)' }}>
             {new Date().toLocaleDateString('en-IN', { weekday: 'long', month: 'short', day: 'numeric' })}
           </div>
         </header>
+
+        {message && (
+          <div className="message-banner">
+            {message}
+          </div>
+        )}
 
         {/* =============== POS TERMINAL VIEW =============== */}
         {view === 'pos' && (
@@ -543,6 +678,76 @@ export default function App() {
                   <Doughnut data={doughnutData} options={doughnutOptions} />
                 </div>
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* =============== SETTINGS VIEW =============== */}
+        {view === 'settings' && (
+          <div className="view-section">
+            <h1 className="page-title">Printer & System Settings</h1>
+
+            <div className="settings-grid">
+              <section className="settings-card">
+                <h3>Thermal Printer (Web Serial ESC/POS)</h3>
+                <p>Recommended for Raspberry Pi 4 kiosk deployment. Driverless and instant printing.</p>
+                <div className="settings-row"><span>Browser Support</span><strong>{isWebSerialSupported() ? 'Available' : 'Unavailable'}</strong></div>
+                <div className="settings-row"><span>Connection</span><strong>{printerStatus}</strong></div>
+                <div className="settings-actions">
+                  <button className="btn btn-primary" onClick={connectPrinter}>Connect Printer</button>
+                  <button className="btn" onClick={handleTestPrint}>Print Test Receipt</button>
+                </div>
+              </section>
+
+              <section className="settings-card">
+                <h3>Receipt Layout</h3>
+                <form onSubmit={handleSaveSettings}>
+                  <div className="form-group">
+                    <label>Shop Name</label>
+                    <input
+                      type="text"
+                      value={settingsForm.shopName}
+                      onChange={e => setSettingsForm({ ...settingsForm, shopName: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Tagline</label>
+                    <input
+                      type="text"
+                      value={settingsForm.shopTagline}
+                      onChange={e => setSettingsForm({ ...settingsForm, shopTagline: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Printer Width</label>
+                    <select
+                      value={settingsForm.lineWidth}
+                      onChange={e => setSettingsForm({ ...settingsForm, lineWidth: Number(e.target.value) })}
+                    >
+                      <option value={32}>58mm (32 chars)</option>
+                      <option value={42}>80mm (42 chars)</option>
+                    </select>
+                  </div>
+                  <button type="submit" className="btn btn-primary">Save Settings</button>
+                </form>
+              </section>
+
+              <section className="settings-card">
+                <h3>Storage Health</h3>
+                <p>Data is stored in IndexedDB on the Raspberry Pi SD card.</p>
+                <div className="settings-row">
+                  <span>Usage</span>
+                  <strong>{storageInfo ? `${Math.round(storageInfo.usage / 1024)} KB` : '-'}</strong>
+                </div>
+                <div className="settings-row">
+                  <span>Quota</span>
+                  <strong>{storageInfo ? `${Math.round(storageInfo.quota / (1024 * 1024))} MB` : '-'}</strong>
+                </div>
+                <div className="settings-row">
+                  <span>Used %</span>
+                  <strong>{storageInfo ? storageInfo.usagePercentage : '-'}</strong>
+                </div>
+              </section>
             </div>
           </div>
         )}

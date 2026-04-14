@@ -66,42 +66,34 @@ sudo bash ~/pos-app/setup-pos.sh
 The script will automatically:
 - Update the OS
 - Install Node.js LTS
-- Install CUPS (printer management)
+- Install CUPS (optional fallback for browser print mode)
 - Build the frontend (`npm run build`)
 - Install a static file server on port **3000**
 - Create a **systemd service** so the app starts on boot
 - Configure **Chromium kiosk mode** to auto-launch the app
-- Apply a **silent printing policy** to Chromium
+- Apply Chromium policies for **silent printing + Web Serial**
 
 ---
 
-## 🖨️ Step 4: Install the Thermal Printer
+## 🖨️ Step 4: Connect Thermal Printer (Web Serial)
 
 > [!IMPORTANT]
-> Complete this step **after** running the setup script and **before** rebooting.
+> Complete this step after the setup script and before handoff.
 
 1. **Connect** your USB thermal printer to the Raspberry Pi.
-2. Open a browser and navigate to the **CUPS admin panel**:
-   ```
-   http://localhost:631
-   ```
-3. Go to **Administration → Add Printer**.
-4. Log in with your Pi username/password when prompted.
-5. Select your **USB thermal printer** from the list.
-6. Choose the correct **driver** (for generic thermal printers, use `Generic Text-Only Printer` or your brand-specific driver such as `Epson TM-T20`).
-7. Click **Add Printer**, then click **Set As Server Default**.
+2. Let kiosk Chromium open the POS app at `http://localhost:3000`.
+3. Open **Settings** in the POS sidebar.
+4. Click **Connect Printer** and accept the browser serial permission.
+5. Click **Print Test Receipt** to verify ESC/POS output.
 
-### Verify Printer Works
-```bash
-# Print a test page from the terminal
-echo "POS Printer Test - OK" | lp
-```
+> [!TIP]
+> Web Serial is the default production mode in this project. It bypasses printer drivers and prints directly to the USB thermal device.
 
 ---
 
-## 🔐 Step 5: Configure Silent Printing in Chromium
+## 🔐 Step 5: Verify Chromium Policies
 
-For the POS app to print without showing a dialog box, you need to set the default printer as your thermal printer. The setup script already applies the `DisablePrintPreview` policy.
+The setup script writes managed Chromium policies required for kiosk operation.
 
 To verify:
 ```bash
@@ -109,16 +101,9 @@ cat /etc/chromium/policies/managed/pos-policy.json
 ```
 
 Output should show `"DisablePrintPreview": true`.
+It should also include serial policies such as `"DefaultSerialGuardSetting": 1`.
 
-You can also update the default printer name in that file:
-```json
-{
-  "PrintingEnabled": true,
-  "DefaultPrinterSelection": "YOUR_PRINTER_NAME",
-  "DisablePrintPreview": true
-}
-```
-Replace `YOUR_PRINTER_NAME` with the name shown in CUPS.
+For Web Serial mode, no printer driver name is required.
 
 ---
 
@@ -172,7 +157,8 @@ crontab -e
 |-------|-----|
 | App doesn't launch on boot | Run `systemctl status pos-app` and check logs |
 | Chromium doesn't open | Check `~/.config/autostart/pos-kiosk.desktop` exists |
-| Printer not found in CUPS | Use `lpstat -p` to list detected printers |
+| Serial permission prompt not shown | Ensure URL is `http://localhost:3000` and reconnect USB printer |
+| Test print fails in Settings | Reconnect printer, then click **Connect Printer** again |
 | Print dialog still appears | Verify `/etc/chromium/policies/managed/pos-policy.json` is correct |
 | White screen in Chromium | Wait 10s — app may still be starting; `systemctl restart pos-app` |
 | Can't add products | Check browser console (F12 on external keyboard) for IndexedDB errors |
@@ -185,7 +171,7 @@ Before delivering to a customer:
 
 - [ ] Flash SD card with POS image
 - [ ] Run `setup-pos.sh` on fresh OS
-- [ ] Install and test thermal printer
+- [ ] Connect printer in Settings and run test receipt
 - [ ] Add all customer's products via the Products screen
 - [ ] Test a full checkout → receipt print cycle
 - [ ] Set up weekly backup cron job
